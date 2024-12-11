@@ -1,0 +1,180 @@
+---
+title: "Analysis of Johns Hopkin's Covid-19 data"
+author: "Dimitris"
+date: "2024-12-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Introduction
+
+The COVID-19 pandemic has had a profound impact worldwide. While the dataset include data from around the world, this analysis focuses on the COVID-19 data for Greece and Finland. The data is sourced from Johns Hopkins University's repository, you can find the .csv file [here](https://github.com/CSSEGISandData/COVID-19/blob/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv), and it spans from January 1, 2020, to March 1, 2023.
+I explore trends in cases and deaths, visualize the data, and apply a forecasting model (ARIMA) to predict future cases. I will also consider potential biases in the data and the analysis.
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+To install all required packages in a single command you can use `install.packages(c("tidyverse", "lubridate", "forecast", "zoo"))`
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(zoo)
+```
+
+## Import Data
+
+```{r}
+# base URL of Dataset
+url_in = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names = c("time_series_covid19_confirmed_global.csv",
+               "time_series_covid19_deaths_global.csv"
+)
+urls = str_c(url_in, file_names)
+
+# Importing Dataset
+global_cases = read_csv(urls[1])
+global_deaths = read_csv(urls[2])
+```
+
+## Data Exploration
+
+```{r}
+# Preview the first 10 rows
+head(global_cases, 10)
+head(global_deaths, 10)
+
+# Only checking global_cases, global_deaths will be similar
+unique(global_cases$"Country/Region")
+unique(global_cases$"Province/State")
+
+```
+
+## Data Preparation
+
+The data is transformed into a tidy format for analysis. This includes reshaping columns, merging case and death data, and filtering for Greece and Finland. Daily case and death counts are calculated to better visualize trends over time.
+
+```{r}
+# Transform datasets
+tidy_cases <- global_cases %>%
+  select(-c(Lat, Long, `Province/State`)) %>%
+  pivot_longer(
+    cols = -`Country/Region`,
+    names_to = "date",
+    values_to = "cases"
+  )
+
+tidy_deaths <- global_deaths %>%
+  select(-c(Lat, Long, `Province/State`)) %>%
+  pivot_longer(
+    cols = -`Country/Region`,
+    names_to = "date",
+    values_to = "deaths"
+  )
+
+# Merge datasets
+covid_data <- tidy_cases %>%
+  inner_join(tidy_deaths, by = c("Country/Region" = "Country/Region", "date" = "date")) %>%
+  rename(Country.Region = `Country/Region`) %>%
+  mutate(date = as.Date(date, format = "%m/%d/%y")) %>%
+  filter(Country.Region %in% c("Greece", "Finland"))
+
+# Compute daily cases and deaths
+covid_daily <- covid_data %>%
+  group_by(Country.Region) %>%
+  arrange(date) %>%
+  mutate(
+    daily_cases = cases - lag(cases, default = 0),
+    daily_deaths = deaths - lag(deaths, default = 0)
+  ) %>%
+  ungroup()
+
+head(covid_daily)
+str(covid_daily)
+summary(covid_daily)
+```
+
+## Visualization: Cumulative Cases Over Time
+
+Below is a line plot of cumulative COVID-19 cases over time, comparing Greece and Finland. This allows us to observe how the pandemic evolved in both countries.
+
+```{r}
+ggplot(covid_data, aes(x = date, y = cases, color = Country.Region)) +
+  geom_line(linewidth = 1) +
+  labs(title = "Cumulative COVID-19 Cases Over Time",
+       x = "Date", y = "Cumulative Cases",
+       color = "Country") +
+  theme_minimal()
+```
+
+## Visualization: Daily New Cases With a Moving Average
+
+To smooth out day-to-day variability, we use a 7-day moving average. This highlights broader trends and patterns in case reporting.
+
+```{r}
+covid_daily_smoothed <- covid_daily %>%
+  group_by(Country.Region) %>%
+  mutate(daily_cases_7day = zoo::rollmean(daily_cases, 7, fill = NA, align = "right")) %>%
+  ungroup()
+
+ggplot(covid_daily_smoothed, aes(x = date, y = daily_cases_7day, color = Country.Region)) +
+  geom_line(size = 1, na.rm = TRUE) +
+  labs(title = "7-Day Moving Average of Daily COVID-19 Cases",
+       x = "Date", y = "Daily Cases (7-day Avg)",
+       color = "Country") +
+  theme_minimal()
+```
+
+**Interpretation:** The smoothed trends help identify waves, surges, or periods of decline that might not be immediately evident from raw daily data.
+
+## Modeling
+
+We will use an ARIMA model to forecast future daily cases for Finland. This simple statistical model attempts to capture autocorrelation patterns in the time series and project them forward.
+
+```{r}
+finland_data <- covid_daily %>%
+  filter(Country.Region == "Finland") %>%
+  arrange(date)
+
+# Create a time series object for daily cases
+finland_ts <- ts(finland_data$daily_cases, 
+                 start = c(year(min(finland_data$date)), yday(min(finland_data$date))), 
+                 frequency = 365)
+
+# Fit an ARIMA model
+fit <- auto.arima(finland_ts, seasonal = FALSE)
+summary(fit)
+
+# Forecast the next 30 days
+forecast_values <- forecast(fit, h = 30)
+autoplot(forecast_values) +
+  labs(title = "30-Day Forecast for Finland Daily Cases",
+       x = "Time", y = "Daily Cases")
+```
+**Model Interpretation:** The ARIMA model provides a baseline forecast for the next 30 days. While the forecast is uncertain and subject to change, it can offer a glimpse into potential future trends. Factors such as changes in testing policies, new variants, or vaccination rates are not accounted for by this model, so these forecasts should be interpreted with caution.
+
+## Possible Biases
+
+**Selection Bias:** The data I chose to use included only two countries, Greece and Finland. The patterns observed may not generalize to other countries or regions with different public health measures, demographics, or testing policies.
+
+**Temporal Bias:** Over time, testing strategies and criteria may have changed. Early in the pandemic, testing might have been limited to symptomatic individuals or certain groups, whereas later testing might have been more widespread.
+
+## Summary
+
+**Visualization**: We created a line plot of cumulative cases and a smoothed line plot of daily new cases.
+
+**Modeling**: We fit a simple ARIMA model to Finland’s daily cases.
+
+**Bias Consideration:** We discussed data limitations, reporting biases, selection bias (only two countries), and modeling assumptions
+
+```{r}
+ sessionInfo()
+```
